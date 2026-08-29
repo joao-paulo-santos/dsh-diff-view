@@ -70,3 +70,4 @@ render diffs.
 
 - [dsh-approval-diff](https://github.com/joao-paulo-santos/dsh-approval-diff) renders its review cards' hunks with the engine and shares the diff stylesheet
 - [dsh-scratchpad](https://github.com/joao-paulo-santos/dsh-scratchpad) powers its `mode: 'diff'` pads with `diffRowsComponent` (optional; degrades to plain text when absent)
+- [dsh-wo-github](https://github.com/joao-paulo-santos/dsh-wo-github) renders commit patches with word highlights and the diff grid stylesheet (optional; patches render without it)
