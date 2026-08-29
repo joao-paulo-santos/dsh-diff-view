@@ -1,0 +1,28 @@
+{
+  "name": "dsh-diff-view",
+  "version": "0.1.0",
+  "description": "Diff view: a reusable two-text diff viewer for DSH client plugins. The diffView client service exposes the line-LCS + word-span engine and a self-contained split/unified diff component with line numbers, context collapse, and its own stylesheet. No persistence; no approval coupling.",
+  "type": "module",
+  "license": "MIT",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dependencies": {},
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}

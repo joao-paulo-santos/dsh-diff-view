@@ -1,0 +1,4 @@
+# dsh-diff-view: reusable two-text diff viewer opened by other plugins via the client service diffView.
+- insert:
+    - id: diff-view
+      name: dsh-diff-view
