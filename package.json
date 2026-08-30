@@ -1,6 +1,6 @@
 {
   "name": "dsh-diff-view",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Diff view: a reusable two-text diff viewer for DSH client plugins. The diffView client service exposes the line-LCS + word-span engine and a self-contained split/unified diff component with line numbers, context collapse, and its own stylesheet. No persistence; no approval coupling.",
   "type": "module",
   "license": "MIT",

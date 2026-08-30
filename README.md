@@ -10,7 +10,7 @@ There is no UI of its own to visit. Plugins inject the client service
 `diffView`:
 
 ```js
-// consumer client half — inject: ['diffView', …]
+// consumer client half, inject: ['diffView', …]
 
 // 1. A self-contained component (scrolls its own body, own grid):
 const Diff = ctx.diffView.diffRowsComponent({
@@ -26,7 +26,7 @@ return React.createElement(Diff, {})
 const rows = ctx.diffView.engine.alignedEditRowsOf(beforeLines, afterLines)
 //   rows: [{ kind: 'same'|'replace'|'delete'|'insert', removedLine?, addedLine? }]
 const spans = ctx.diffView.engine.wordSpansOfLinePair(beforeLine, afterLine)
-//   spans: { removedSpans, addedSpans } — arrays of { text, changed }
+//   spans: { removedSpans, addedSpans }: arrays of { text, changed }
 ctx.diffView.engine.wordSpanElements(spans.removedSpans, 'adf-w-del')
 ```
 
