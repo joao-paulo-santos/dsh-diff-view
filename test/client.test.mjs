@@ -1,9 +1,10 @@
 /**
  * dsh-diff-view - client bundle tests against faithful fakes.
  *
- * The centerpiece: LINE NUMBERS STAY TRUE ACROSS CONTEXT COLLAPSE. The
- * pre-collapse numbering pass is the reason this plugin exists (the
- * standalone view it replaces numbered rows after collapse and drifted).
+ * The centerpiece stays: LINE NUMBERS ARE TRUE. The component now renders
+ * native-FileDiff-style hunks (@@ headers, per-side gutters, word
+ * highlights, optional Shiki spans), so the pinned regressions assert
+ * numbering through the hunk pipeline instead of a collapsed grid.
  *
  * Run: node --test test/   (or node --test test/client.test.mjs)
  */
@@ -16,8 +17,7 @@ import { fileURLToPath } from 'node:url'
 
 const CLIENT_BUNDLE_PATH = pathResolve(pathDirname(fileURLToPath(import.meta.url)), '../lib/client.js')
 
-// Fake React: element builder + initial-state useState (no effects needed
-// by DiffRowsView; the view-mode setter is not exercised on first render).
+// Fake React: element builder + initial-state useState.
 const mkReact = () => ({
   createElement: (type, props, ...children) => ({ type, props, children: children.flat(Infinity) }),
   useState: (initial) => [typeof initial === 'function' ? initial() : initial, () => {}],
@@ -49,10 +49,17 @@ const mkDocument = () => {
   }
 }
 
-const loadBundle = (react, documentObj) => {
+/** Primitives stub matching the seed module's useCodeHighlighter contract. */
+const mkPrimitives = () => ({
+  languageForPath: () => 'ts',
+  useCodeHighlighter: () => (code) => code.split('\n').map((text) => [{ text, style: { color: '#abc' } }]),
+})
+
+const loadBundle = (react, documentObj, primitives = undefined) => {
   let moduleExports
   globalThis.window = { __ModuleLoader__: { load: (handoff) => { moduleExports = handoff.factory((spec) => {
     if (spec === 'react') return react
+    if (spec === '@deepseek-ai/dsh-client-ui-primitives' && primitives !== undefined) return primitives
     throw new Error('unexpected require: ' + spec)
   }) } } }
   globalThis.document = documentObj
@@ -75,28 +82,35 @@ const textOf = (node) => {
   return (node.children ?? []).map(textOf).join('')
 }
 
+const byClass = (node, cls) => flatten(node).filter((n) => typeof n.props?.className === 'string' && n.props.className.split(' ').includes(cls))
+
 test('service provided as diffView; stylesheet installed; dispose removes it', () => {
-  const react = mkReact()
   const documentObj = mkDocument()
-  const client = loadBundle(react, documentObj)
+  const client = loadBundle(mkReact(), documentObj)
   assert.equal(client.name, 'diff-view-client')
   assert.deepEqual(client.inject, [])
   const { ctx, provided } = mkCtx(client.inject)
   const disposer = client.apply(ctx)
-  assert.equal(typeof provided.diffView.diffRowsComponent, 'function')
+  assert.equal(typeof provided.diffView.diffFileComponent, 'function')
+  assert.equal(typeof provided.diffView.hunksOf, 'function')
   assert.equal(typeof provided.diffView.engine.alignedEditRowsOf, 'function')
   assert.equal(documentObj.head.children.length, 1)
-  assert.match(documentObj.head.children[0].textContent, /\.adf-diffview-grid/)
+  assert.match(documentObj.head.children[0].textContent, /\.ddv-root/)
   disposer()
   assert.equal(documentObj.head.children.length, 0)
 })
 
-test('diffRowsComponent validation: object + before/after strings required', () => {
+test('diffFileComponent validation: bad hunks or half texts rejected; missing hunks defer to render', () => {
   const client = loadBundle(mkReact(), mkDocument())
   const { ctx, provided } = mkCtx(client.inject)
   client.apply(ctx)
-  assert.throws(() => provided.diffView.diffRowsComponent(null), /options object required/)
-  assert.throws(() => provided.diffView.diffRowsComponent({ before: 'a' }), /before and after strings required/)
+  assert.throws(() => provided.diffView.diffFileComponent(null), /options object required/)
+  assert.throws(() => provided.diffView.diffFileComponent({ before: 'a' }), /before and after strings required/)
+  assert.throws(() => provided.diffView.diffFileComponent({ hunks: [{ lines: 'nope' }] }), /hunks must be WorkspaceDiffHunk\[\]/)
+  // Creation without hunks is legal (approval-diff supplies them per render);
+  // rendering without any hunks anywhere is the error.
+  const deferred = provided.diffView.diffFileComponent({ showToggle: false })
+  assert.throws(() => deferred({}), /hunks required/)
 })
 
 test('engine: row kinds and order (same/replace/delete/insert)', () => {
@@ -119,67 +133,147 @@ test('word spans: unchanged tokens stay plain, changed flagged', () => {
   assert.deepEqual(spans.addedSpans.filter((s) => s.changed).map((s) => s.text.trim()), ['b'])
 })
 
-test('THE FIX: split-view line numbers survive context collapse', () => {
+test('hunksOf: native shape, context grouping, true header math', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const hunks = provided.diffView.hunksOf('a\nb\nc', 'a\nB\nc')
+  assert.equal(hunks.length, 1)
+  assert.equal(hunks[0].oldStart, 1)
+  assert.equal(hunks[0].oldLines, 3)
+  assert.equal(hunks[0].newStart, 1)
+  assert.equal(hunks[0].newLines, 3)
+  assert.deepEqual(hunks[0].lines, [' a', '-b', '+B', ' c'])
+})
+
+test('hunksOf: distant changes split into separate hunks', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const before = Array.from({ length: 40 }, (_, i) => 'line ' + (i + 1)).join('\n')
+  const after = before.replace('line 2', 'LINE 2').replace('line 38', 'LINE 38')
+  const hunks = provided.diffView.hunksOf(before, after)
+  assert.equal(hunks.length, 2)
+  assert.equal(hunks[0].oldStart, 1)
+  assert.equal(hunks[1].oldStart, 35)
+})
+
+test('THE FIX: split-view line numbers stay true with far-away changes', () => {
   const lines = []
   for (let i = 1; i <= 20; i++) lines.push('line ' + i)
   const before = [...lines, 'old tail'].join('\n')
   const after = [...lines, 'new tail'].join('\n')
 
-  const react = mkReact()
-  const client = loadBundle(react, mkDocument())
+  const client = loadBundle(mkReact(), mkDocument())
   const { ctx, provided } = mkCtx(client.inject)
   client.apply(ctx)
-  const Component = provided.diffView.diffRowsComponent({ before, after })
+  const Component = provided.diffView.diffFileComponent({ before, after })
   const tree = Component({})
-  const flat = flatten(tree)
 
-  // 20 unchanged same rows + 1 replace row: the same-run collapses.
-  const delCell = flat.find((n) => typeof n.props?.className === 'string' && n.props.className.includes('adf-del'))
-  const addCell = flat.find((n) => typeof n.props?.className === 'string' && n.props.className.includes('adf-add'))
-  assert.ok(delCell && addCell, 'replace row rendered')
-  // True numbers: old line 21 / new line 21 — NOT 4 (kept-run position).
-  const delIdx = flat.indexOf(delCell)
-  const addIdx = flat.indexOf(addCell)
-  assert.equal(textOf(flat[delIdx - 1]), '21', 'old line number after the ellipsis band')
-  assert.equal(textOf(flat[addIdx - 1]), '21', 'new line number after the ellipsis band')
-  // And an ellipsis band is present (the collapse actually ran).
-  assert.ok(flat.some((n) => typeof n.props?.className === 'string' && n.props.className.includes('adf-ellipsis')))
+  // One hunk, starting 3 lines above the change: @@ -18,4 +18,4 @@
+  const headers = byClass(tree, 'ddv-hunkheader')
+  assert.equal(headers.length, 1)
+  assert.match(textOf(headers[0]), /-18,4 \+18,4/)
+  // The replace row: del cell numbered 21 on the left, add cell 21 on the right.
+  const delCells = byClass(tree, 'ddv-side-del')
+  const addCells = byClass(tree, 'ddv-side-add')
+  assert.equal(delCells.length, 1)
+  assert.equal(addCells.length, 1)
+  assert.equal(textOf(byClass(delCells[0], 'ddv-num')[0]), '21', 'old line number after collapsed context')
+  assert.equal(textOf(byClass(addCells[0], 'ddv-num')[0]), '21', 'new line number after collapsed context')
+  assert.equal(textOf(byClass(delCells[0], 'ddv-text')[0]), 'old tail')
+  assert.equal(textOf(byClass(addCells[0], 'ddv-text')[0]), 'new tail')
 })
 
-test('unified view keeps numbering true across collapse too', () => {
+test('unified view keeps numbering true (pure delete)', () => {
   const lines = []
   for (let i = 1; i <= 20; i++) lines.push('line ' + i)
   // A true DELETE: old line 21 ('tail one') is removed, old line 22 remains.
   const before = [...lines, 'tail one', 'tail two'].join('\n')
   const after = [...lines, 'tail two'].join('\n')
 
-  const react = mkReact()
-  const client = loadBundle(react, mkDocument())
+  const client = loadBundle(mkReact(), mkDocument())
   const { ctx, provided } = mkCtx(client.inject)
   client.apply(ctx)
-  const Component = provided.diffView.diffRowsComponent({ before, after, initialMode: 'unified' })
-  const flat = flatten(Component({}))
-  const delCell = flat.find((n) => typeof n.props?.className === 'string' && n.props.className.includes('adf-del'))
-  assert.ok(delCell, 'delete row rendered')
-  const delIdx = flat.indexOf(delCell)
-  // Unified rows render number, sign, then cell — scan back for the number.
-  let numberText = ''
-  for (let back = delIdx - 1; back >= 0; back--) {
-    const cls = flat[back].props?.className
-    if (typeof cls === 'string' && cls.includes('adf-num')) { numberText = textOf(flat[back]); break }
-  }
-  assert.equal(numberText, '21')
+  const Component = provided.diffView.diffFileComponent({ before, after, initialMode: 'unified' })
+  const tree = Component({})
+  const delLines = byClass(tree, 'ddv-line').filter((n) => n.props.className.includes('ddv-row-del'))
+  assert.equal(delLines.length, 1)
+  const nums = byClass(delLines[0], 'ddv-num')
+  assert.equal(textOf(nums[0]), '21', 'old number on the deleted line')
+  assert.equal(textOf(nums[1]), '', 'no new number on a pure delete')
+  assert.equal(textOf(byClass(delLines[0], 'ddv-text')[0]), 'tail one')
+})
+
+test('split view: replace pairs carry word-level highlights', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const Component = provided.diffView.diffFileComponent({ before: 'const a = 1;', after: 'const b = 1;' })
+  const tree = Component({})
+  const delWords = byClass(tree, 'ddv-w-del')
+  const addWords = byClass(tree, 'ddv-w-add')
+  assert.equal(delWords.map(textOf).join('').trim(), 'a')
+  assert.equal(addWords.map(textOf).join('').trim(), 'b')
+})
+
+test('unnumbered hunks: no header, blank numbers, real text kept', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const Component = provided.diffView.diffFileComponent({
+    hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old line', '+new line'], unnumbered: true }],
+  })
+  const tree = Component({})
+  assert.equal(byClass(tree, 'ddv-hunkheader').length, 0, 'no header for unnumbered hunks')
+  const nums = byClass(tree, 'ddv-num')
+  assert.ok(nums.length > 0)
+  assert.ok(nums.every((n) => textOf(n) === ''), 'every number blank')
+  assert.ok(textOf(tree).includes('old line') && textOf(tree).includes('new line'), 'content intact')
+})
+
+test('render-time hunks prop overrides creation options', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const Component = provided.diffView.diffFileComponent({ before: 'x', after: 'y', showToggle: false })
+  const tree = Component({ hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-q', '+r'] }] })
+  assert.ok(textOf(tree).includes('q'))
+  assert.equal(byClass(tree, 'ddv-togglebar').length, 0, 'creation options still apply')
+})
+
+test('Shiki spans merge with word spans: styled AND word-highlighted pieces', () => {
+  const client = loadBundle(mkReact(), mkDocument(), mkPrimitives())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const Component = provided.diffView.diffFileComponent({ path: 'a.ts', before: 'const a = 1;', after: 'const b = 1;' })
+  const tree = Component({})
+  const mergedDel = byClass(tree, 'ddv-w-del')
+  assert.ok(mergedDel.length > 0, 'word highlight survived the merge')
+  assert.equal(mergedDel[0].props.style?.color, '#abc', 'syntax style carried onto the word piece')
+  // Plain (unchanged) pieces keep their syntax style without a word class.
+  const styled = flatten(tree).filter((n) => n.props?.style?.color === '#abc' && typeof n.props.className !== 'string')
+  assert.ok(styled.length > 0, 'unchanged syntax pieces render styled')
+})
+
+test('primitives absent: plain-text fallback still renders the full diff', () => {
+  const client = loadBundle(mkReact(), mkDocument())
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const Component = provided.diffView.diffFileComponent({ path: 'a.ts', before: 'const a = 1;', after: 'const b = 1;' })
+  const tree = Component({})
+  assert.ok(textOf(tree).includes('const a = 1;'))
+  assert.ok(byClass(tree, 'ddv-w-del').length > 0, 'word highlights need no primitives')
 })
 
 test('showToggle:false renders no toggle bar', () => {
-  const react = mkReact()
-  const client = loadBundle(react, mkDocument())
+  const client = loadBundle(mkReact(), mkDocument())
   const { ctx, provided } = mkCtx(client.inject)
   client.apply(ctx)
-  const withToggle = flatten(provided.diffView.diffRowsComponent({ before: 'a', after: 'b' })({}))
-  assert.ok(withToggle.some((n) => n.props?.className === 'adf-viewtoggle'))
-  const without = flatten(provided.diffView.diffRowsComponent({ before: 'a', after: 'b', showToggle: false })({}))
-  assert.ok(!without.some((n) => n.props?.className === 'adf-viewtoggle'))
+  const withToggle = flatten(provided.diffView.diffFileComponent({ before: 'a', after: 'b' })({}))
+  assert.ok(withToggle.some((n) => n.props?.className === 'ddv-togglebar'))
+  const without = flatten(provided.diffView.diffFileComponent({ before: 'a', after: 'b', showToggle: false })({}))
+  assert.ok(!without.some((n) => n.props?.className === 'ddv-togglebar'))
 })
 
 test('scrub: window global restored after load', () => {
