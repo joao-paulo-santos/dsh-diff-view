@@ -280,3 +280,28 @@ test('scrub: window global restored after load', () => {
   loadBundle(mkReact(), mkDocument())
   assert.equal(globalThis.window, undefined)
 })
+
+test('line picking: +/- lines clickable and marked via isLinePicked', () => {
+  const documentObj = mkDocument()
+  const client = loadBundle(mkReact(), documentObj)
+  const { ctx, provided } = mkCtx(client.inject)
+  client.apply(ctx)
+  const toggled = []
+  const Component = provided.diffView.diffFileComponent({
+    hunks: [{ oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' ctx', '-old', '+new'] }],
+    initialMode: 'unified', showToggle: false,
+  })
+  const tree = Component({
+    onLineToggle: (hunkIndex, src) => { toggled.push({ hunkIndex, src }) },
+    isLinePicked: (hunkIndex, src) => hunkIndex === 0 && src === 2,
+  })
+  const pickables = byClass(tree, 'ddv-pickable')
+  assert.equal(pickables.length, 2, 'the del and add rows are pickable, context is not')
+  assert.ok(pickables.some((n) => n.props.className.includes('ddv-picked')), 'the picked line is marked')
+  const picked = pickables.find((n) => n.props.className.includes('ddv-picked'))
+  picked.props.onClick()
+  assert.deepEqual(toggled, [{ hunkIndex: 0, src: 2 }], 'toggle reports the hunk and source line index')
+  // Without onLineToggle nothing is pickable.
+  const plain = Component({})
+  assert.equal(byClass(plain, 'ddv-pickable').length, 0)
+})
